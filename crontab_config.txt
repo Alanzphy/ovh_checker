@@ -1,0 +1,14 @@
+# Crontab Configuration for OVH Checker
+# Use $(pwd) to get the current project path
+
+# Every 6 hours (recommended)
+0 0,6,12,18 * * * $(pwd)/run_checker.sh
+
+# Every 12 hours (11 AM and 11 PM)
+# 0 11,23 * * * $(pwd)/run_checker.sh
+
+# Once a day (9 AM)
+# 0 9 * * * $(pwd)/run_checker.sh
+
+# To configure, copy and paste in terminal:
+# echo "0 0,6,12,18 * * * $(pwd)/run_checker.sh" | crontab -
