@@ -100,7 +100,7 @@ crontab crontab_config.txt
 ## What the Script Checks
 
 The script monitors availability for:
-- **VPS Model**: VPS-2 (4 vCore, 8GB RAM, 75GB NVMe)
+- **VPS Model**: VPS-2 (6 vCore, 12GB RAM, 100GB NVMe)
 - **Commitment**: No commitment (monthly billing)
 - **Regions**:
   - North America: Canada - East - Beauharnois (BHS)
