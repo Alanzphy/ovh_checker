@@ -1,3 +1,15 @@
+"""
+OVH VPS Availability Checker
+
+This script automatically checks for VPS-2 server availability on OVH's configurator page
+and sends Telegram notifications when servers become available.
+
+Regions monitored:
+- North America: Canada - East - Beauharnois (BHS)
+- Europe: France - Gravelines (GRA)
+License: MIT
+"""
+
 import os, re, asyncio
 import requests
 from dotenv import load_dotenv
@@ -9,7 +21,7 @@ from playwright.async_api import (
 
 # === Config ===
 URL = "https://www.ovhcloud.com/en/vps/configurator/"
-TIMEOUT = 30000  # Increased to 30s
+TIMEOUT = 60000
 load_dotenv()
 HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 BOT = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -33,47 +45,119 @@ def notify(msg: str):
 
 async def accept_cookies(page):
     try:
-        cookie_btn = page.get_by_role("button", name=re.compile("accept all", re.I))
-        if await cookie_btn.count() > 0:
-            await cookie_btn.first.click(timeout=2000)
-            await page.wait_for_timeout(500)
-    except Exception:
-        pass  # If no cookies, no problem
+        print("Waiting for page to load completely...")
+        await page.wait_for_timeout(5000)
 
+        # Try multiple selectors for the cookie accept button
+        cookie_selectors = [
+            '#header_tc_privacy_button_3',  # Specific ID from HTML - most reliable
+            'button[data-tc-privacy="cookie-banner::accept"]',  # OVH specific selector
+            'button[title="Accept"]',  # Title attribute
+            'button[data-navi-id="cookie-accept"]',  # OVH navigation ID
+            'button:has-text("Accept")',  # Text content
+        ]
 
+        # First check if overlay exists
+        overlay_exists = await page.locator("#tc_priv_CustomOverlay").count() > 0
+        if overlay_exists:
+            print("🍪 Cookie overlay detected! Attempting to click Accept...")
+
+        cookie_found = False
+        for selector in cookie_selectors:
+            try:
+                print(f"  Trying cookie selector: {selector}")
+                cookie_btn = page.locator(selector).first
+
+                if await cookie_btn.count() > 0:
+                    print(f"  ✅ Found cookie button! Clicking...")
+                    await cookie_btn.wait_for(state="visible", timeout=5000)
+                    await cookie_btn.click(timeout=10000)
+                    print("  ✅ Cookie button clicked!")
+
+                    # Wait for overlay to disappear
+                    if overlay_exists:
+                        try:
+                            await page.wait_for_selector("#tc_priv_CustomOverlay", state="detached", timeout=10000)
+                            print("  🎉 Cookie overlay removed successfully!")
+                        except:
+                            print("  ⚠️ Overlay still present, forcing removal...")
+                            await page.evaluate("""
+                                const overlay = document.querySelector('#tc_priv_CustomOverlay');
+                                if (overlay) overlay.remove();
+                                const banner = document.querySelector('#header_tc_privacy');
+                                if (banner) banner.remove();
+                            """)
+
+                    await page.wait_for_timeout(3000)
+                    cookie_found = True
+                    break
+            except Exception as e:
+                print(f"  Cookie selector {selector} failed: {e}")
+                continue
+
+        if not cookie_found and overlay_exists:
+            print("❌ No cookie button worked, forcing overlay removal...")
+            await page.evaluate("""
+                const overlay = document.querySelector('#tc_priv_CustomOverlay');
+                if (overlay) overlay.remove();
+                const banner = document.querySelector('#header_tc_privacy');
+                if (banner) banner.remove();
+            """)
+            await page.wait_for_timeout(2000)
+
+    except Exception as e:
+        print(f"Cookie handling error: {e}")
+        pass
 async def click_and_verify(page, selector, name, force=False):
     """Locates, clicks an element and verifies it becomes selected."""
     try:
         print(f"Attempting to click '{name}' with selector '{selector}'...")
+
+        await page.wait_for_timeout(3000)
+
         element = page.locator(selector).first
-        await element.wait_for(state="visible", timeout=10000)
+        await element.wait_for(state="visible", timeout=20000)
+
+        await page.wait_for_timeout(2000)
+        print(f"Element '{name}' is visible, attempting click...")
 
         if force:
-            await element.click(force=True, timeout=5000)
+            await element.click(force=True, timeout=10000)
         else:
-            await element.click(timeout=5000)
+            await element.click(timeout=10000)
 
-        print(f"✅ Successful click on '{name}'. Verifying it's selected...")
+        print(f"✅ Successful click on '{name}'.")
 
-        # For label elements, verify if the associated input is checked
+        # For radio buttons, verify the input is checked
         try:
-            # Get the 'for' attribute of the label to find the input
-            for_attr = await element.get_attribute("for")
-            if for_attr:
-                input_element = page.locator(f"input[id='{for_attr}']")
-                await expect(input_element).to_be_checked(timeout=5000)
-                print(f"✅ '{name}' confirmed as selected.")
+            # If it's a label, find the associated input
+            if selector.startswith("label"):
+                for_attr = await element.get_attribute("for")
+                if for_attr:
+                    input_element = page.locator(f"input[id='{for_attr}']")
+                    # Wait a bit for the state to change
+                    await page.wait_for_timeout(1000)
+                    is_checked = await input_element.is_checked()
+                    if is_checked:
+                        print(f"✅ '{name}' confirmed as selected (radio checked).")
+                    else:
+                        print(f"⚠️ '{name}' - clicked but radio not checked yet.")
+                else:
+                    print(f"⚠️ '{name}' - label has no 'for' attribute.")
+            # If it's an input, check if it's checked
+            elif selector.startswith("input"):
+                await page.wait_for_timeout(1000)
+                is_checked = await element.is_checked()
+                if is_checked:
+                    print(f"✅ '{name}' confirmed as selected (input checked).")
+                else:
+                    print(f"⚠️ '{name}' - clicked but not checked yet.")
             else:
-                # If it's not a label, try to verify data-state
-                await expect(element).to_have_attribute(
-                    "data-state", "checked", timeout=5000
-                )
-                print(f"✅ '{name}' confirmed as selected.")
-        except:
-            # If verification fails, we still consider the click successful
-            print(f"⚠️ '{name}' - click performed but couldn't verify state.")
+                print(f"✅ '{name}' - clicked successfully.")
+        except Exception as verify_error:
+            print(f"⚠️ '{name}' - click performed but verification failed: {verify_error}")
 
-        await page.wait_for_timeout(2000)  # Longer pause for UI to update
+        await page.wait_for_timeout(5000)
         return True
     except PWTimeoutError:
         print(
@@ -83,8 +167,6 @@ async def click_and_verify(page, selector, name, force=False):
         print(f"❌ Error clicking '{name}' or verifying selection: {e}")
 
     return False
-
-
 async def check_availability(page, region_name, location_name, location_code):
     """
     Checks server availability in a specific region and location.
@@ -109,10 +191,12 @@ async def check_availability(page, region_name, location_name, location_code):
 
         # 2. Locate the server container by its text
         print(f"Searching for location '{location_name}'...")
+        await page.wait_for_timeout(3000)
+
         location_tile = page.locator(
             "div.ods-card", has_text=re.compile(location_name, re.I)
         ).first
-        await location_tile.wait_for(state="visible", timeout=5000)
+        await location_tile.wait_for(state="visible", timeout=15000)
 
         # 3. Check if it's disabled
         # The main container has the 'disabled' class if not available
@@ -131,7 +215,7 @@ async def check_availability(page, region_name, location_name, location_code):
             )
             return
 
-        # 4. If we get here, it's available. Notify.
+
         msg = f"✅ Server available in *{region_name}*!\n\n- Location: *{location_name} ({location_code})*\n- [Book now]({URL})"
         notify(msg)
 
@@ -150,29 +234,129 @@ async def main():
         try:
             print(f"Opening {URL}...")
             await page.goto(URL, wait_until="networkidle", timeout=TIMEOUT)
-            await accept_cookies(page)
-            await page.wait_for_timeout(3000)  # Wait longer for the page to stabilize
 
-            # --- Base configuration selection ---
+            # Handle cookies popup
+            await accept_cookies(page)
+
+            print("Checking if cookie popup is closed...")
+            try:
+                cookie_overlay = page.locator("#tc_priv_CustomOverlay")
+                if await cookie_overlay.count() > 0:
+                    await cookie_overlay.wait_for(state="hidden", timeout=10000)
+                    print("Cookie overlay confirmed as closed")
+            except:
+                print("Cookie overlay check completed")
+
+            await page.wait_for_timeout(8000)
+
             print("--- Starting base configuration selection ---")
 
-            # Select VPS-2 (using real HTML selector)
-            vps2_selector = "label[for*='vps-2025-model2']"
-            if not await click_and_verify(page, vps2_selector, "VPS-2 Option"):
-                # Alternative selector
-                vps2_selector_alt = "input[value='vps-2025-model2']"
-                await page.locator(vps2_selector_alt).click()
-                await page.wait_for_timeout(1000)
+            print("Waiting for page elements to be fully loaded...")
+            await page.wait_for_timeout(5000)
+
+            # Handle any additional popups that might interfere with clicks
+            print("🚫 Checking for interfering popups...")
+            try:
+                # Check for geolocation popup
+                geo_popup = page.locator("#geoPopin")
+                if await geo_popup.count() > 0:
+                    print("  Found geo popup, attempting to close...")
+                    try:
+                        await page.keyboard.press("Escape")
+                        await page.wait_for_timeout(1000)
+                    except:
+                        pass
+
+                    # Force remove if still there
+                    try:
+                        await page.evaluate("""
+                            const geoPopup = document.querySelector('#geoPopin');
+                            if (geoPopup) {
+                                geoPopup.remove();
+                                console.log('Geo popup removed');
+                            }
+                        """)
+                    except:
+                        pass
+
+                # Check for any other modal dialogs
+                modals = await page.locator("dialog[open], .modal[style*='block']").all()
+                if modals:
+                    print(f"  Found {len(modals)} modal dialogs, trying to close...")
+                    for modal in modals:
+                        try:
+                            await modal.evaluate("el => el.remove()")
+                        except:
+                            pass
+
+                print("  ✅ Popup cleanup completed")
+                await page.wait_for_timeout(2000)
+
+            except Exception as e:
+                print(f"  Popup handling error: {e}")
+            # Select VPS-2
+            print("Attempting to select VPS-2 option...")
+
+            vps2_selectors = [
+                "input[id='radio-group:«r0»:radio:input:vps-2025-model2']",  # Direct input
+                "label[for='radio-group:«r0»:radio:input:vps-2025-model2']",  # Label
+                "input[value='vps-2025-model2']",  # By value
+                "label:has-text('VPS-2')",  # By text content
+            ]
+
+            vps2_selected = False
+            for selector in vps2_selectors:
+                try:
+                    print(f"  Trying VPS-2 selector: {selector}")
+                    if await click_and_verify(page, selector, f"VPS-2 Option ({selector})"):
+                        vps2_selected = True
+                        break
+                except Exception as e:
+                    print(f"  Selector failed: {e}")
+                    continue
+
+            if not vps2_selected:
+                print("❌ All VPS-2 selectors failed, trying force methods...")
+                try:
+                    # Force approach 1: Scroll to element and force click
+                    vps2_input = page.locator("input[value='vps-2025-model2']")
+                    await vps2_input.scroll_into_view_if_needed()
+                    await page.wait_for_timeout(1000)
+                    await vps2_input.click(force=True, timeout=10000)
+                    await page.wait_for_timeout(3000)
+                    print("✅ VPS-2 clicked with force")
+                    vps2_selected = True
+                except Exception as e:
+                    print(f"❌ Force click failed: {e}")
+
+                    # Force approach 2: JavaScript click
+                    try:
+                        print("Trying JavaScript click...")
+                        await page.evaluate("""
+                            const input = document.querySelector('input[value="vps-2025-model2"]');
+                            if (input) {
+                                input.click();
+                                input.checked = true;
+                                input.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                        """)
+                        await page.wait_for_timeout(3000)
+                        print("✅ VPS-2 clicked via JavaScript")
+                        vps2_selected = True
+                    except Exception as e2:
+                        print(f"❌ JavaScript click also failed: {e2}")
 
             # Select "No commitment"
+            print("Attempting to select No commitment option...")
             no_commitment_selector = "label[for*='default']"
             if not await click_and_verify(
                 page, no_commitment_selector, "No commitment Option"
             ):
+                print("Primary selector failed, trying alternative selector...")
                 # Alternative selector
                 no_commitment_selector_alt = "input[value='default']"
-                await page.locator(no_commitment_selector_alt).click()
-                await page.wait_for_timeout(1000)
+                await page.locator(no_commitment_selector_alt).click(timeout=10000)
+                await page.wait_for_timeout(3000)
 
             print("\n--- Base configuration selected. Checking locations ---")
 
