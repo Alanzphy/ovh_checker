@@ -1,7 +1,18 @@
 """
 OVH VPS Availability Checker
 
-This script automatically checks for VPS-2 server availability on OVH's configurator page
+This script automatically checks for VPS-2 server availability on OVH's configu    try:
+        print(f"Attempting to click '{name}' with selector '{selector}'...")
+
+        # Wait longer for page to stabilize before looking for element
+        await page.wait_for_timeout(1000)  # Reduced from 3000ms
+
+        element = page.locator(selector).first
+        await element.wait_for(state="visible", timeout=20000)  # Keep long timeout for visibility
+
+        # Additional wait to ensure element is fully loaded and clickable
+        await page.wait_for_timeout(1000)  # Reduced from 2000ms
+        print(f"Element '{name}' is visible, attempting click...")e
 and sends Telegram notifications when servers become available.
 
 Regions monitored:
@@ -46,7 +57,7 @@ def notify(msg: str):
 async def accept_cookies(page):
     try:
         print("Waiting for page to load completely...")
-        await page.wait_for_timeout(5000)
+        await page.wait_for_timeout(3000)  # Wait 3 seconds for page to stabilize
 
         # Try multiple selectors for the cookie accept button
         cookie_selectors = [
@@ -88,7 +99,7 @@ async def accept_cookies(page):
                                 if (banner) banner.remove();
                             """)
 
-                    await page.wait_for_timeout(3000)
+                    await page.wait_for_timeout(1000)  # Shorter wait after click
                     cookie_found = True
                     break
             except Exception as e:
@@ -103,7 +114,7 @@ async def accept_cookies(page):
                 const banner = document.querySelector('#header_tc_privacy');
                 if (banner) banner.remove();
             """)
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(1000)  # Shorter wait after forced removal
 
     except Exception as e:
         print(f"Cookie handling error: {e}")
@@ -136,7 +147,7 @@ async def click_and_verify(page, selector, name, force=False):
                 if for_attr:
                     input_element = page.locator(f"input[id='{for_attr}']")
                     # Wait a bit for the state to change
-                    await page.wait_for_timeout(1000)
+                    await page.wait_for_timeout(500)  # Reduced from 1000ms
                     is_checked = await input_element.is_checked()
                     if is_checked:
                         print(f"✅ '{name}' confirmed as selected (radio checked).")
@@ -146,7 +157,7 @@ async def click_and_verify(page, selector, name, force=False):
                     print(f"⚠️ '{name}' - label has no 'for' attribute.")
             # If it's an input, check if it's checked
             elif selector.startswith("input"):
-                await page.wait_for_timeout(1000)
+                await page.wait_for_timeout(500)  # Reduced from 1000ms
                 is_checked = await element.is_checked()
                 if is_checked:
                     print(f"✅ '{name}' confirmed as selected (input checked).")
@@ -157,7 +168,7 @@ async def click_and_verify(page, selector, name, force=False):
         except Exception as verify_error:
             print(f"⚠️ '{name}' - click performed but verification failed: {verify_error}")
 
-        await page.wait_for_timeout(5000)
+        await page.wait_for_timeout(1000)  # Shorter pause for UI to update (reduced from 5s)
         return True
     except PWTimeoutError:
         print(
@@ -191,7 +202,7 @@ async def check_availability(page, region_name, location_name, location_code):
 
         # 2. Locate the server container by its text
         print(f"Searching for location '{location_name}'...")
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(1000)  # Wait for tab content to load (reduced from 3000ms)
 
         location_tile = page.locator(
             "div.ods-card", has_text=re.compile(location_name, re.I)
@@ -247,12 +258,12 @@ async def main():
             except:
                 print("Cookie overlay check completed")
 
-            await page.wait_for_timeout(8000)
+            await page.wait_for_timeout(3000)
 
             print("--- Starting base configuration selection ---")
 
             print("Waiting for page elements to be fully loaded...")
-            await page.wait_for_timeout(5000)
+            await page.wait_for_timeout(2000)
 
             # Handle any additional popups that might interfere with clicks
             print("🚫 Checking for interfering popups...")
@@ -323,7 +334,7 @@ async def main():
                     await vps2_input.scroll_into_view_if_needed()
                     await page.wait_for_timeout(1000)
                     await vps2_input.click(force=True, timeout=10000)
-                    await page.wait_for_timeout(3000)
+                    await page.wait_for_timeout(1000)  # Reduced from 3000ms
                     print("✅ VPS-2 clicked with force")
                     vps2_selected = True
                 except Exception as e:
@@ -340,7 +351,7 @@ async def main():
                                 input.dispatchEvent(new Event('change', { bubbles: true }));
                             }
                         """)
-                        await page.wait_for_timeout(3000)
+                        await page.wait_for_timeout(1000)  # Reduced from 3000ms
                         print("✅ VPS-2 clicked via JavaScript")
                         vps2_selected = True
                     except Exception as e2:
@@ -356,7 +367,7 @@ async def main():
                 # Alternative selector
                 no_commitment_selector_alt = "input[value='default']"
                 await page.locator(no_commitment_selector_alt).click(timeout=10000)
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(1000)  # Reduced from 3000ms
 
             print("\n--- Base configuration selected. Checking locations ---")
 
